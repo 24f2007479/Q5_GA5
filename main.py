@@ -6,35 +6,34 @@ import json
 app = FastAPI()
 
 
-
 class RunRequest(BaseModel):
-    budget_tokens:int
-    steps:list
+    budget_tokens: int
+    steps: list
 
 
 
 # -----------------------------
-# Canonicalize arguments
+# Normalize arguments
 # -----------------------------
 
 def normalize(obj):
 
     if isinstance(obj, dict):
 
-        result={}
+        new = {}
 
         for k in sorted(obj.keys()):
 
+            # ignore tracing field
             if k == "client_ts":
                 continue
 
-            result[k]=normalize(obj[k])
+            new[k] = normalize(obj[k])
+
+        return new
 
 
-        return result
-
-
-    elif isinstance(obj,list):
+    elif isinstance(obj, list):
 
         return [
             normalize(x)
@@ -42,25 +41,23 @@ def normalize(obj):
         ]
 
 
-    elif isinstance(obj,str):
+    elif isinstance(obj, str):
 
-        return " ".join(
-            obj.split()
-        )
+        # remove whitespace differences
+        return " ".join(obj.split())
 
 
     else:
-
         return obj
 
 
 
-def call_signature(step):
+def signature(step):
 
     return (
         step.get("tool"),
         json.dumps(
-            normalize(step.get("args",{})),
+            normalize(step.get("args", {})),
             sort_keys=True
         )
     )
@@ -68,66 +65,65 @@ def call_signature(step):
 
 
 # -----------------------------
-# Detect same call 3 times
+# Same call 3+ times
 # -----------------------------
 
-def repeated_three(steps):
+def three_repeat(steps):
 
-    if len(steps)<3:
+    if len(steps) < 3:
         return False
 
 
-    last3=steps[-3:]
-
-
-    sigs=[
-        call_signature(x)
-        for x in last3
+    sigs = [
+        signature(x)
+        for x in steps
     ]
 
 
     return (
-        sigs[0]==sigs[1]==sigs[2]
+        sigs[-1] == sigs[-2]
+        and
+        sigs[-2] == sigs[-3]
     )
 
 
 
 # -----------------------------
-# Detect A B cycle
+# A B A B A B cycle
 # -----------------------------
 
-def detect_cycle(steps):
+def period_two_loop(steps):
 
-    if len(steps)<6:
+    if len(steps) < 6:
         return False
 
 
-    last6=steps[-6:]
+    last = steps[-6:]
 
 
-    sigs=[
-        call_signature(x)
-        for x in last6
+    s = [
+        signature(x)
+        for x in last
     ]
 
 
     return (
-        sigs[0]==sigs[2]==sigs[4]
+        s[0] == s[2] == s[4]
         and
-        sigs[1]==sigs[3]==sigs[5]
+        s[1] == s[3] == s[5]
         and
-        sigs[0]!=sigs[1]
+        s[0] != s[1]
     )
 
 
 
+# -----------------------------
+# Main decision
+# -----------------------------
 
-# -----------------------------
-# API
-# -----------------------------
 
 @app.post("/")
-def guard(req:RunRequest):
+def guard(req: RunRequest):
 
 
     steps=req.steps
@@ -135,17 +131,18 @@ def guard(req:RunRequest):
     budget=req.budget_tokens
 
 
-
     total=sum(
-        step.get(
-            "tokens_used",
-            0
+        int(
+            x.get(
+                "tokens_used",
+                0
+            )
         )
-        for step in steps
+        for x in steps
     )
 
 
-    # Budget check first
+    # budget always wins
 
     if total >= budget:
 
@@ -157,24 +154,24 @@ def guard(req:RunRequest):
 
 
 
-    # Loop checks
+    # loop detection
 
-    if repeated_three(steps):
+    if three_repeat(steps):
 
         return {
             "decision":"halt",
             "reason":
-            "Detected repeated identical tool calls."
+            "Detected three identical consecutive tool calls."
         }
 
 
 
-    if detect_cycle(steps):
+    if period_two_loop(steps):
 
         return {
             "decision":"halt",
             "reason":
-            "Detected repeating two-step tool cycle."
+            "Detected repeating two-step cycle."
         }
 
 
